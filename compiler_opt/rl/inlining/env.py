@@ -36,6 +36,10 @@ class InliningForSizeTask(env.MLGOTask):
   def get_cmdline(self, clang_path: str, base_args: list[str],
                   interactive_base_path: str | None,
                   working_dir: str) -> list[str]:
+    compiled_module_path = os.path.join(working_dir, _COMPILED_MODULE_NAME)
+    # Use CIR pipeline with no LLVM IR optimization. The interactive inliner
+    # still runs on the lowered LLVM IR via the named pipe protocol.
+    cir_flags = ['-fclangir', '-O0']
     if interactive_base_path:
       interactive_args = [
           '-mllvm',
@@ -47,9 +51,8 @@ class InliningForSizeTask(env.MLGOTask):
       ]
     else:
       interactive_args = []
-    compiled_module_path = os.path.join(working_dir, _COMPILED_MODULE_NAME)
     return [clang_path
-           ] + base_args + interactive_args + ['-o', compiled_module_path]
+           ] + base_args + cir_flags + interactive_args + ['-o', compiled_module_path]
 
   def get_module_scores(self, working_dir: str) -> dict[str, float]:
     compiled_module_path = os.path.join(working_dir, _COMPILED_MODULE_NAME)

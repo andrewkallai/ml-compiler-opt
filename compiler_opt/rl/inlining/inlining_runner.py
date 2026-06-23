@@ -44,10 +44,16 @@ class InliningRunner(compilation_runner.CompilationRunner):
                *,
                llvm_size_path: str,
                ir2vec_vocab_path: str | None = None,
+               cir_opt_path: str = 'cir-opt',
+               cir_translate_path: str = 'cir-translate',
+               llc_path: str = 'llc',
                **kwargs):
     super().__init__(**kwargs)
     self._llvm_size_path = llvm_size_path
     self._ir2vec_vocab_path = ir2vec_vocab_path
+    self._cir_opt_path = cir_opt_path
+    self._cir_translate_path = cir_translate_path
+    self._llc_path = llc_path
 
   def compile_and_get_size(self, command_line: corpus.FullyQualifiedCmdLine,
                            tf_policy_path: str | None,
@@ -78,22 +84,38 @@ class InliningRunner(compilation_runner.CompilationRunner):
     output_native_path = os.path.join(working_dir, 'native')
 
     native_size = 0
+
+    # Step 1: Compile source to CIR
+    cir_path = os.path.join(working_dir, 'module.cir')
+    cir_opt_path = os.path.join(working_dir, 'module_opt.cir')
+    ll_path = os.path.join(working_dir, 'module.ll')
+
+    # Strip any -emit-* flags from the original command line and
+    # append -fclangir -emit-cir to compile to CIR
+    filtered_cmd = [a for a in command_line if not a.startswith('-emit-')]
     cmdline = []
     if self._launcher_path:
       cmdline.append(self._launcher_path)
-    cmdline.extend([self._clang_path] + list(command_line))
+    cmdline.extend([self._clang_path] + filtered_cmd)
+    cmdline.extend(['-fclangir', '-emit-cir', '-o', cir_path])
+    self._cancellation_manager.start_cancellable_process(cmdline)
 
-    mllvm_args = ['-mllvm', '-enable-ml-inliner=development']
-    if self._ir2vec_vocab_path:
-      mllvm_args.extend([
-          '-mllvm', '-ml-inliner-ir2vec-vocab-file=' + self._ir2vec_vocab_path
-      ])
-    mllvm_args.extend(['-mllvm', '-training-log=' + log_path])
-
-    cmdline.extend(mllvm_args + ['-o', output_native_path])
+    # Step 2: Run CIR ML inliner via cir-opt
+    cmdline = [self._cir_opt_path]
+    cmdline += ['--inline=enable-ml-inliner']
     if tf_policy_path:
-      cmdline.extend(
-          ['-mllvm', '-ml-inliner-model-under-training=' + tf_policy_path])
+      cmdline += ['--inline=ml-inliner-model-path=' + tf_policy_path]
+    cmdline += [cir_path, '-o', cir_opt_path]
+    self._cancellation_manager.start_cancellable_process(cmdline)
+
+    # Step 3: Lower CIR to LLVM IR via cir-translate
+    cmdline = [self._cir_translate_path, '--cir-to-llvmir', cir_opt_path,
+               '-o', ll_path]
+    self._cancellation_manager.start_cancellable_process(cmdline)
+
+    # Step 4: Compile LLVM IR to object with no LLVM optimizations
+    cmdline = [self._llc_path, '-O0', '-filetype=obj', ll_path,
+               '-o', output_native_path]
     self._cancellation_manager.start_cancellable_process(cmdline)
     cmdline = [self._llvm_size_path, output_native_path]
     output = self._cancellation_manager.start_cancellable_process(
