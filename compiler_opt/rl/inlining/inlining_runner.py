@@ -85,20 +85,30 @@ class InliningRunner(compilation_runner.CompilationRunner):
 
     native_size = 0
 
-    # Step 1: Compile source to CIR
     cir_path = os.path.join(working_dir, 'module.cir')
     cir_opt_path = os.path.join(working_dir, 'module_opt.cir')
     ll_path = os.path.join(working_dir, 'module.ll')
 
-    # Strip any -emit-* flags from the original command line and
-    # append -fclangir -emit-cir to compile to CIR
-    filtered_cmd = [a for a in command_line if not a.startswith('-emit-')]
-    cmdline = []
-    if self._launcher_path:
-      cmdline.append(self._launcher_path)
-    cmdline.extend([self._clang_path] + filtered_cmd)
-    cmdline.extend(['-fclangir', '-emit-cir', '-o', cir_path])
-    self._cancellation_manager.start_cancellable_process(cmdline)
+    # Check for pre-compiled CIR input from the CIR corpus
+    cir_input_arg = [a for a in command_line if a.startswith('--cir-input=')]
+    if cir_input_arg:
+      # CIR corpus: copy the pre-compiled .cir file, skip Step 1
+      cir_src = cir_input_arg[0].split('=', 1)[1]
+      remaining_cmd = tuple(
+          a for a in command_line if not a.startswith('--cir-input='))
+      with open(cir_src, 'r') as f_in:
+        with open(cir_path, 'w') as f_out:
+          f_out.write(f_in.read())
+    else:
+      remaining_cmd = command_line
+      # Step 1: Compile source to CIR via clang
+      filtered_cmd = [a for a in remaining_cmd if not a.startswith('-emit-')]
+      cmdline = []
+      if self._launcher_path:
+        cmdline.append(self._launcher_path)
+      cmdline.extend([self._clang_path] + filtered_cmd)
+      cmdline.extend(['-fclangir', '-emit-cir', '-o', cir_path])
+      self._cancellation_manager.start_cancellable_process(cmdline)
 
     # Step 2: Run CIR ML inliner via cir-opt
     cmdline = [self._cir_opt_path]

@@ -87,26 +87,36 @@ class LoadedModuleSpec:
   loaded_ir: bytes
   loaded_thinlto_index: bytes | None = None
   orig_options: tuple[str, ...] = ()
+  is_cir: bool = False
 
   def _create_files_and_get_context(self, local_dir: str):
     root_dir = os.path.join(local_dir, self.name)
     os.makedirs(root_dir, exist_ok=True)
+    cir_path = os.path.join(root_dir, 'input.cir')
     module_path = os.path.join(root_dir, 'input.bc')
     thinlto_index_path = None
-    with tf.io.gfile.GFile(module_path, 'wb') as f:
-      f.write(self.loaded_ir)
+    path = cir_path if self.is_cir else module_path
+    if self.is_cir:
+      with tf.io.gfile.GFile(path, 'w') as f:
+        f.write(self.loaded_ir.decode('utf-8'))
+    else:
+      with tf.io.gfile.GFile(path, 'wb') as f:
+        f.write(self.loaded_ir)
     if self.loaded_thinlto_index is not None:
       thinlto_index_path = os.path.join(root_dir, 'index.thinlto.bc')
       with tf.io.gfile.GFile(thinlto_index_path, 'wb') as f:
         f.write(self.loaded_thinlto_index)
     context = Corpus.ReplaceContext(
-        module_full_path=module_path, thinlto_full_path=thinlto_index_path)
+        module_full_path=path, thinlto_full_path=thinlto_index_path)
     return context
 
   def build_command_line(self, local_dir: str) -> FullyQualifiedCmdLine:
     """Different LoadedModuleSpec objects must get different `local_dir`s."""
     context = self._create_files_and_get_context(local_dir)
-    return tuple(option.format(context=context) for option in self.orig_options)
+    options = list(self.orig_options)
+    if self.is_cir:
+      options = ['--cir-input=' + context.module_full_path] + options
+    return tuple(option.format(context=context) for option in options)
 
 
 @dataclass(frozen=True)
@@ -416,9 +426,16 @@ class Corpus:
     return sampled_specs
 
   def load_module_spec(self, module_spec: ModuleSpec) -> LoadedModuleSpec:
-    with tf.io.gfile.GFile(
-        os.path.join(self._base_dir, module_spec.name + '.bc'), 'rb') as f:
-      module_bytes = f.read()
+    # Try .cir first (CIR corpus), fall back to .bc (bitcode corpus)
+    cir_path = os.path.join(self._base_dir, module_spec.name + '.cir')
+    bc_path = os.path.join(self._base_dir, module_spec.name + '.bc')
+    is_cir = tf.io.gfile.exists(cir_path)
+    if is_cir:
+      with tf.io.gfile.GFile(cir_path, 'rb') as f:
+        module_bytes = f.read()
+    else:
+      with tf.io.gfile.GFile(bc_path, 'rb') as f:
+        module_bytes = f.read()
     thinlto_bytes = None
     if module_spec.has_thinlto:
       with tf.io.gfile.GFile(
@@ -429,7 +446,8 @@ class Corpus:
         name=module_spec.name,
         loaded_ir=module_bytes,
         loaded_thinlto_index=thinlto_bytes,
-        orig_options=module_spec.command_line)
+        orig_options=module_spec.command_line,
+        is_cir=is_cir)
 
   @property
   def module_specs(self):
