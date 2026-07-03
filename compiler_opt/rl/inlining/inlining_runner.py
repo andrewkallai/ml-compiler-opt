@@ -113,8 +113,8 @@ class InliningRunner(compilation_runner.CompilationRunner):
     # Step 2: Run CIR ML inliner via cir-opt (with goto/label pre-processing)
     # FIDL-generated CIR uses cir.goto/cir.label within scoped regions which
     # the inliner cannot handle; run --cir-flatten-cfg --cir-goto-solver first.
-    # All passes must be in a single cir-opt invocation because text-serialized
-    # cir.alloca with __cleanup_dest_slot cannot be re-parsed.
+    # Also fix up --cir-flatten-cfg's malformed alloca text output (missing
+    # 'init' keyword on __cleanup_dest_slot allocas) that cir-translate rejects.
     cmdline = [self._cir_opt_path]
     cmdline += ['--cir-flatten-cfg', '--cir-goto-solver']
     cmdline += ['--inline=enable-ml-inliner']
@@ -123,6 +123,13 @@ class InliningRunner(compilation_runner.CompilationRunner):
       cmdline += ['--inline=ml-inliner-model-path=' + tf_policy_path]
     cmdline += [cir_path, '-o', cir_opt_path]
     self._cancellation_manager.start_cancellable_process(cmdline)
+    # Fix malformed allocas produced by --cir-flatten-cfg
+    with open(cir_opt_path, 'r') as f:
+        data = f.read()
+    data = data.replace('__cleanup_dest_slot", cleanup_dest_slot]',
+                        '__cleanup_dest_slot", init]')
+    with open(cir_opt_path, 'w') as f:
+        f.write(data)
 
     # Step 3: Lower CIR to LLVM IR via cir-translate
     cmdline = [self._cir_translate_path, '--cir-to-llvmir', cir_opt_path,
@@ -130,7 +137,7 @@ class InliningRunner(compilation_runner.CompilationRunner):
     self._cancellation_manager.start_cancellable_process(cmdline)
 
     # Step 4: Compile LLVM IR to object with no LLVM optimizations
-    cmdline = [self._llc_path, '-O0', '-filetype=obj', ll_path,
+    cmdline = [self._clang_path, '-O0', '-c', '-x', 'ir', ll_path,
                '-o', output_native_path]
     self._cancellation_manager.start_cancellable_process(cmdline)
     cmdline = [self._llvm_size_path, output_native_path]
