@@ -110,9 +110,15 @@ class InliningRunner(compilation_runner.CompilationRunner):
       cmdline.extend(['-fclangir', '-emit-cir', '-o', cir_path])
       self._cancellation_manager.start_cancellable_process(cmdline)
 
-    # Step 2: Run CIR ML inliner via cir-opt
+    # Step 2: Run CIR ML inliner via cir-opt (with goto/label pre-processing)
+    # FIDL-generated CIR uses cir.goto/cir.label within scoped regions which
+    # the inliner cannot handle; run --cir-flatten-cfg --cir-goto-solver first.
+    # All passes must be in a single cir-opt invocation because text-serialized
+    # cir.alloca with __cleanup_dest_slot cannot be re-parsed.
     cmdline = [self._cir_opt_path]
+    cmdline += ['--cir-flatten-cfg', '--cir-goto-solver']
     cmdline += ['--inline=enable-ml-inliner']
+    cmdline += ['--inline=training-log=' + log_path]
     if tf_policy_path:
       cmdline += ['--inline=ml-inliner-model-path=' + tf_policy_path]
     cmdline += [cir_path, '-o', cir_opt_path]
