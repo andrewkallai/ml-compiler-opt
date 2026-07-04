@@ -46,20 +46,11 @@ def _rewrite_driver_command_to_cir(cmd_parts: list[str],
                                    output_cir_path: str) -> list[str] | None:
     """Rewrite a clang driver command to emit CIR instead of an object file.
 
-    Takes the driver-level command parts from compile_commands.json and:
-    1. Removes the compiler tool name (full path)
-    2. Removes -emit-*, -c, -o, build-system flags, and debug flags
-    3. Removes -fembed-bitcode* and related -Xclang flags
-    4. Adds -fclangir -emit-cir -o <output_cir_path>
-    5. Uses source_file (from 'file' field) as the positional input
+    Strips only flags that cause CIR codegen issues or are irrelevant for
+    CIR extraction. Keeps the Fuchsia target and Fuchsia sysroot includes.
     """
     # Strip the compiler binary (full path like /path/to/clang++)
-    if cmd_parts and _is_tool_arg(cmd_parts[0]):
-        parts = cmd_parts[1:]
-    elif cmd_parts and cmd_parts[0].endswith(('clang', 'clang++', 'cc', 'c++')):
-        parts = cmd_parts[1:]
-    else:
-        parts = list(cmd_parts)
+    parts = cmd_parts[1:] if cmd_parts else []
 
     result = []
     skip_next = False
@@ -88,7 +79,7 @@ def _rewrite_driver_command_to_cir(cmd_parts: list[str],
         if arg.startswith('-sys-header-deps'):
             continue
 
-        # Skip -g* debug flags
+        # Skip -g* debug flags (irrelevant for CIR)
         if arg in ('-g', '-g0', '-g1', '-g2', '-g3',
                    '-gdwarf', '-gdwarf-2', '-gdwarf-3',
                    '-gdwarf-4', '-gdwarf-5'):
@@ -112,6 +103,10 @@ def _rewrite_driver_command_to_cir(cmd_parts: list[str],
         if arg.startswith('-fcrash-diagnostics-dir'):
             continue
 
+        # Skip -ftrivial-auto-var-init (CIR codegen NYI)
+        if arg.startswith('-ftrivial-auto-var-init'):
+            continue
+
         # Skip -grecord-gcc-switches and -grecord-command-line
         if arg.startswith('-grecord-'):
             continue
@@ -132,7 +127,7 @@ def _rewrite_driver_command_to_cir(cmd_parts: list[str],
         if arg.endswith('.o') or '.o:' in arg:
             continue
 
-        # Skip positional args that look like source files — we use source_file
+        # Skip positional args that look like source files - use source_file
         if arg.endswith(('.c', '.cc', '.cpp', '.cxx')):
             continue
 
@@ -142,8 +137,6 @@ def _rewrite_driver_command_to_cir(cmd_parts: list[str],
     result.append(source_file)
     result.extend(['-fclangir', '-emit-cir', '-o', output_cir_path])
     return result
-
-
 def _extract_cc1_flags(cmd_parts: list[str]) -> list[str]:
     """Extract -cc1 style flags from a driver command."""
     if cmd_parts and _is_tool_arg(cmd_parts[0]):
@@ -192,15 +185,16 @@ class CIRExtractor:
         )
 
     def module_name(self) -> str:
-        """Return the module name with .cir extension."""
+        """Return the module name without any extension.
+        cir_file and cmd_file add .cir and .cmd respectively."""
         base = os.path.basename(self._source_rel_path)
         for ext in ('.cc', '.cpp', '.c', '.cxx'):
             if base.endswith(ext):
-                return base[:-len(ext)] + '.cir'
-        return base + '.cir'
+                return base[:-len(ext)]
+        return base
 
     def cir_file(self) -> str:
-        return os.path.join(self.dest_dir(), self.module_name())
+        return os.path.join(self.dest_dir(), self.module_name() + '.cir')
 
     def cmd_file(self) -> str:
         return os.path.join(self.dest_dir(), self.module_name() + '.cmd')
@@ -291,8 +285,24 @@ def write_corpus_manifest(
     relative_output_paths: list[str | None],
     output_dir: str,
 ):
-    """Write corpus_description.json for the CIR corpus."""
-    modules = [p for p in relative_output_paths if p is not None]
+    """Write corpus_description.json for the CIR corpus.
+    Only includes modules whose .cir file actually exists on disk.
+    """
+    def _strip_source_ext(path):
+        for ext in ('.cc', '.cpp', '.c', '.cxx'):
+            if path.endswith(ext):
+                return path[:-len(ext)]
+        return path
+
+    modules = []
+    for p in relative_output_paths:
+        if p is None:
+            continue
+        module_name = _strip_source_ext(p)
+        cir_path = os.path.join(output_dir, module_name + '.cir')
+        if os.path.exists(cir_path):
+            modules.append(module_name)
+
     corpus_description = {
         'has_thinlto': False,
         'modules': modules,

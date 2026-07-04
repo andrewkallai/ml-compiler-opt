@@ -393,13 +393,21 @@ class Corpus:
           delete_flags=delete_flags,
           replace_flags=replace_flags)
 
+    def _get_module_size(data_path, name):
+      """Get file size, trying .cir first (CIR corpus), then .bc."""
+      for ext in ('.cir', '.bc'):
+        path = os.path.join(data_path, name + ext)
+        if tf.io.gfile.exists(path):
+          return tf.io.gfile.GFile(path).size()
+      raise FileNotFoundError(
+          'Could not find ' + name + '.cir or ' + name + '.bc in ' + data_path)
+
     # perform concurrently because fetching file size may be slow (remote)
     with concurrent.futures.ThreadPoolExecutor() as tp:
       contents = tp.map(
           lambda name: ModuleSpec(
               name=name,
-              size=tf.io.gfile.GFile(os.path.join(data_path, name + '.bc')).
-              size(),
+              size=_get_module_size(data_path, name),
               command_line=get_cmdline(name),
               has_thinlto=has_thinlto), module_paths)
     self._module_specs = tuple(
