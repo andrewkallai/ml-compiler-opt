@@ -116,11 +116,13 @@ class InliningRunner(compilation_runner.CompilationRunner):
     # Also fix up --cir-flatten-cfg's malformed alloca text output (missing
     # 'init' keyword on __cleanup_dest_slot allocas) that cir-translate rejects.
     cmdline = [self._cir_opt_path]
-    cmdline += ['--cir-flatten-cfg', '--cir-goto-solver']
-    extra_opts = 'enable-ml-inliner training-log=' + log_path
+    inline_opts = 'enable-ml-inliner training-log=' + log_path
     if tf_policy_path:
-      extra_opts += ' ml-inliner-model-path=' + tf_policy_path
-    cmdline += ['--inline=' + extra_opts]
+      inline_opts += ' ml-inliner-model-path=' + tf_policy_path
+    cmdline += [
+        '--pass-pipeline=builtin.module(cir-flatten-cfg,cir-goto-solver,inline{' +
+        inline_opts + '})',
+    ]
     cmdline += [cir_path, '-o', cir_opt_path]
     self._cancellation_manager.start_cancellable_process(cmdline)
     # Fix malformed allocas produced by --cir-flatten-cfg
