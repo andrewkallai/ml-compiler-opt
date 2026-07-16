@@ -63,6 +63,33 @@ import math
 from compiler_opt import type_map
 from typing import Any, BinaryIO
 from collections.abc import Generator
+import io
+
+
+def _peek_is_json_boundary(f: BinaryIO) -> bool:
+  """Check if the stream is at a \n{ boundary (next JSON)."""
+  pos = f.tell()
+  c = f.read(1)
+  if c == b'\n':
+    nxt = f.read(1)
+    if nxt == b'{':
+      f.seek(pos)  # put back \n{
+      return True
+    f.seek(pos)
+    return False
+  elif c == b'{':
+    f.seek(pos)
+    return True
+  f.seek(pos)
+  return False
+
+
+def _scan_past_trailing_newline(f: BinaryIO) -> None:
+  """Consume an optional trailing \n after tensor data."""
+  c = f.read(1)
+  if c != b'\n' and c:
+    f.seek(f.tell() - 1)
+
 import numpy as np
 import tensorflow as tf
 
@@ -180,27 +207,61 @@ def _enumerate_log_from_stream(
   score_spec = header.score
   context = None
 
-  def expect_newline():
-    expected = f.readline().decode('utf-8')
-    if '\n' != expected:
-      raise OSError(f'Expected newline in log stream, got {expected}')
+  def _scan_to_json():
+    """Scan forward to the next JSON object line (starts with '{').
 
-  while event_str := f.readline():
+    Binary tensor data between JSON lines may contain \n bytes, so we
+    read byte-by-byte looking for '\n{' which marks the boundary between
+    tensor data and the next JSON line.
+    """
+    while True:
+      c = f.read(1)
+      if not c:
+        return None
+      if c == b'\n':
+        nxt = f.read(1)
+        if nxt == b'{':
+          # Found the boundary; start reading the JSON line
+          line = nxt + f.readline()
+          return line
+        # Not a boundary, continue scanning
+        # nxt goes back since it might be part of binary data
+        # (this is rare: a \n not followed by { in binary data)
+      elif c == b'{':
+        # Might be a JSON line that starts right at the current position
+        # (e.g. first line after header). Read the rest of the line.
+        line = c + f.readline()
+        return line
+
+  while True:
+    event_str = _scan_to_json()
+    if event_str is None:
+      break
     event = json.loads(event_str)
     if 'context' in event:
       context = event['context']
       continue
     observation_id = int(event['observation'])
-    features = [_read_tensor(f, ts) for ts in tensor_specs]
-    expect_newline()
+    # Read tensor data: read up to tensor_specs bytes, but stop if we
+    # encounter \n{ (next JSON boundary) since the header may advertise
+    # more features than were actually written.
+    features = []
+    for ts in tensor_specs:
+      if _peek_is_json_boundary(f):
+        break
+      features.append(_read_tensor(f, ts))
+    _scan_past_trailing_newline(f)
     score = None
     if score_spec is not None:
-      score_header = json.loads(f.readline())
+      score_header_raw = _scan_to_json()
+      if score_header_raw is None:
+        break
+      score_header = json.loads(score_header_raw)
       if int(score_header['outcome']) != observation_id:
-        raise OSError(f'Expected observation ID {observation_id} \
-                        got {score_header["outcome"]}')
+        raise OSError(f'Expected observation ID {observation_id} '
+                      f'got {score_header["outcome"]}')
       score = _read_tensor(f, score_spec)
-      expect_newline()
+      _scan_past_trailing_newline(f)
     yield ObservationRecord(
         context=context,
         observation_id=observation_id,

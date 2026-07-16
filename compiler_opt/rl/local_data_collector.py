@@ -153,9 +153,13 @@ class LocalDataCollector(data_collector.DataCollector):
     wait_seconds = wait_for_termination()
     current_work = list(zip(sampled_modules, self._current_futures))
     finished_work = [(spec, res) for spec, res in current_work if res.done()]
-    successful_work = [(spec, res.result())
-                       for spec, res in finished_work
-                       if not worker.get_exception(res)]
+    successful_work = []
+    for spec, res in finished_work:
+      exc = worker.get_exception(res)
+      if exc:
+        logging.warning('Module %s failed with exception: %s', spec.name, exc)
+      else:
+        successful_work.append((spec, res.result()))
     failures = len(finished_work) - len(successful_work)
 
     logging.info(('%d of %d modules finished in %d seconds (%d failures).'),

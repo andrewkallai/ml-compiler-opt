@@ -106,6 +106,9 @@ def create_flat_sequence_example_dataset_fn(
   parser_fn = create_parser_fn(agent_cfg)
 
   def _sequence_example_dataset_fn(sequence_examples):
+    if not sequence_examples:
+      return tf.data.Dataset.from_tensor_slices(
+          tf.constant([], dtype=tf.string))
     # Data collector returns empty strings for corner cases, filter them out
     # here.
     # yapf: disable - Looks better hand formatted

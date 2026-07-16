@@ -381,7 +381,12 @@ class Corpus:
       if cmd_override_was_specified:
         ret = cmd_override
       else:
-        with tf.io.gfile.GFile(os.path.join(data_path, name + '.cmd')) as f:
+        cmd_path = os.path.join(data_path, name + '.cmd')
+        # CIR module names may end with .o (bitcode convention) but .cmd
+        # files on disk may omit the .o suffix.
+        if not tf.io.gfile.exists(cmd_path) and name.endswith('.o'):
+          cmd_path = os.path.join(data_path, name[:-2] + '.cmd')
+        with tf.io.gfile.GFile(cmd_path) as f:
           ret = tuple(f.read().replace(r'{', r'{{').replace(r'}',
                                                             r'}}').split('\0'))
           # The options read from a .cmd file must be run with -cc1
@@ -399,6 +404,12 @@ class Corpus:
         path = os.path.join(data_path, name + ext)
         if tf.io.gfile.exists(path):
           return tf.io.gfile.GFile(path).size()
+        # CIR module names may end with .o (bitcode convention) but .cir
+        # files on disk may omit the .o suffix.
+        if ext == '.cir' and name.endswith('.o'):
+          alt_path = os.path.join(data_path, name[:-2] + ext)
+          if tf.io.gfile.exists(alt_path):
+            return tf.io.gfile.GFile(alt_path).size()
       raise FileNotFoundError(
           'Could not find ' + name + '.cir or ' + name + '.bc in ' + data_path)
 
@@ -436,6 +447,10 @@ class Corpus:
   def load_module_spec(self, module_spec: ModuleSpec) -> LoadedModuleSpec:
     # Try .cir first (CIR corpus), fall back to .bc (bitcode corpus)
     cir_path = os.path.join(self._base_dir, module_spec.name + '.cir')
+    # CIR module names may end with .o (bitcode convention) but .cir
+    # files on disk may omit the .o suffix.
+    if not tf.io.gfile.exists(cir_path) and module_spec.name.endswith('.o'):
+      cir_path = os.path.join(self._base_dir, module_spec.name[:-2] + '.cir')
     bc_path = os.path.join(self._base_dir, module_spec.name + '.bc')
     is_cir = tf.io.gfile.exists(cir_path)
     if is_cir:

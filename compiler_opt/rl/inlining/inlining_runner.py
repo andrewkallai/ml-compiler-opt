@@ -44,16 +44,18 @@ class InliningRunner(compilation_runner.CompilationRunner):
                *,
                llvm_size_path: str,
                ir2vec_vocab_path: str | None = None,
-               cir_opt_path: str = 'cir-opt',
-               cir_translate_path: str = 'cir-translate',
-               llc_path: str = 'llc',
+               cir_opt_path: str | None = None,
+               cir_translate_path: str | None = None,
+               llc_path: str | None = None,
                **kwargs):
     super().__init__(**kwargs)
     self._llvm_size_path = llvm_size_path
     self._ir2vec_vocab_path = ir2vec_vocab_path
-    self._cir_opt_path = cir_opt_path
-    self._cir_translate_path = cir_translate_path
-    self._llc_path = llc_path
+    # Derive CIR tool paths from clang's install dir when not explicitly set.
+    clang_bin_dir = os.path.dirname(self._clang_path) if self._clang_path else ''
+    self._cir_opt_path = cir_opt_path or os.path.join(clang_bin_dir, 'cir-opt')
+    self._cir_translate_path = cir_translate_path or os.path.join(clang_bin_dir, 'cir-translate')
+    self._llc_path = llc_path or os.path.join(clang_bin_dir, 'llc')
 
   def compile_and_get_size(self, command_line: corpus.FullyQualifiedCmdLine,
                            tf_policy_path: str | None,
@@ -110,28 +112,17 @@ class InliningRunner(compilation_runner.CompilationRunner):
       cmdline.extend(['-fclangir', '-emit-cir', '-o', cir_path])
       self._cancellation_manager.start_cancellable_process(cmdline)
 
-    # Step 2: Run CIR ML inliner via cir-opt (with goto/label pre-processing)
-    # FIDL-generated CIR uses cir.goto/cir.label within scoped regions which
-    # the inliner cannot handle; run --cir-flatten-cfg --cir-goto-solver first.
-    # Also fix up --cir-flatten-cfg's malformed alloca text output (missing
-    # 'init' keyword on __cleanup_dest_slot allocas) that cir-translate rejects.
+    # Step 2: Run CIR ML inliner via cir-opt
     cmdline = [self._cir_opt_path]
     inline_opts = 'enable-ml-inliner training-log=' + log_path
     if tf_policy_path:
       inline_opts += ' ml-inliner-model-path=' + tf_policy_path
     cmdline += [
-        '--pass-pipeline=builtin.module(cir-flatten-cfg,cir-goto-solver,inline{' +
+        '--pass-pipeline=builtin.module(inline{' +
         inline_opts + '})',
     ]
     cmdline += [cir_path, '-o', cir_opt_path]
     self._cancellation_manager.start_cancellable_process(cmdline)
-    # Fix malformed allocas produced by --cir-flatten-cfg
-    with open(cir_opt_path, 'r') as f:
-        data = f.read()
-    data = data.replace('__cleanup_dest_slot", cleanup_dest_slot]',
-                        '__cleanup_dest_slot", init]')
-    with open(cir_opt_path, 'w') as f:
-        f.write(data)
 
     # Step 3: Lower CIR to LLVM IR via cir-translate
     cmdline = [self._cir_translate_path, '--cir-to-llvmir', cir_opt_path,
@@ -154,6 +145,51 @@ class InliningRunner(compilation_runner.CompilationRunner):
     native_size = int(tmp[0])
     return native_size, log_path
 
+  @staticmethod
+  @staticmethod
+  def _add_policy_info_logits(sequence_example: tf.train.SequenceExample):
+    """Add CategoricalProjectionNetwork_logits and rename features.
+
+    The MLIR inliner training log uses 'action_X' feature names (because C++
+    prepends 'action_'). The Python agent config uses bare feature names
+    (because C++ prepends 'action_' AND TF-Agents also prepends 'action_').
+    This renames all features from 'action_*' to bare names, and adds the
+    CategoricalProjectionNetwork_logits needed by the policy info parser.
+    """
+    fl = sequence_example.feature_lists
+
+    # Rename all action_* features to bare names.
+    # The C++ training log uses 'action_callee_block_count' etc. but the
+    # TF-Agent parser looks for spec names matching the config (which are
+    # bare names like 'callee_block_count').
+    keys = list(fl.feature_list.keys())
+    for key in keys:
+      if key.startswith('action_'):
+        bare_key = key[len('action_'):]
+        if bare_key not in fl.feature_list:
+          dst = fl.feature_list[bare_key]
+          dst.CopyFrom(fl.feature_list[key])
+
+    # Add CategoricalProjectionNetwork_logits if not present.
+    if 'CategoricalProjectionNetwork_logits' not in fl.feature_list:
+      key_candidates = ['inlining_decision', 'action_inlining_decision']
+      num_logits = 2  # binary decision: inline or not
+      logits_list = fl.feature_list['CategoricalProjectionNetwork_logits']
+      action_key = next((k for k in key_candidates if k in fl.feature_list), None)
+      if action_key:
+        actions = fl.feature_list[action_key].feature
+        for action_feat in actions:
+          chosen = int(action_feat.int64_list.value[0])
+          logits = logits_list.feature.add()
+          for i in range(num_logits):
+            logits.float_list.value.append(10.0 if i == chosen else -10.0)
+      else:
+        num_steps = 0
+        for v in fl.feature_list.values():
+          num_steps = max(num_steps, len(v.feature))
+        for _ in range(num_steps):
+          logits = logits_list.feature.add()
+          logits.float_list.value.extend([0.0, 0.0])
   def compile_fn(
       self, command_line: corpus.FullyQualifiedCmdLine, tf_policy_path: str,
       reward_only: bool,
@@ -188,5 +224,11 @@ class InliningRunner(compilation_runner.CompilationRunner):
 
     if not sequence_example.HasField('feature_lists'):
       return {}
+
+    # The CIR/MLIR inliner training log does not include the
+    # CategoricalProjectionNetwork_logits feature that the agent config's
+    # policy info parser expects. Add it here so the downstream data
+    # reader can parse the sequence example successfully.
+    InliningRunner._add_policy_info_logits(sequence_example)
 
     return {_DEFAULT_IDENTIFIER: (sequence_example, native_size)}
