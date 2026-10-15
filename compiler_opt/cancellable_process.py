@@ -138,15 +138,42 @@ class WorkerCancellationManager:
         **kwargs,
     ) as p:
       self.register_process(p)
+            # try:
+            #     # Drain stdout and stderr while waiting for process exit.
+
+
+            #     # Kill the process, then finish communication to drain pipes
+            #     # and reap the child. Avoid calling wait() between these steps.
+            #     try:
+            #         p.kill()
+            #     except ProcessLookupError:
+            #         pass
+
+            #     p.communicate()
+            #     raise
+
+            # finally:
+            #     self.unregister_process(p)
+
 
       try:
-        retcode = p.wait(timeout=self._timeout)
+        # retcode = p.wait(timeout=self._timeout)
+        stdout, stderr = p.communicate(timeout=self._timeout)
+        retcode = p.returncode
       except subprocess.TimeoutExpired as e:
         logging.info('Command hit timeout: %s', shlex.join(cmdline))
-        _kill_process_ignore_exceptions(p)
+        try:
+          p.kill()
+        except ProcessLookupError:
+          pass
+        p.communicate()
         raise e
+        # _kill_process_ignore_exceptions(p)
+        # raise e
       finally:
         self.unregister_process(p)
+
+      retcode = p.returncode
 
       if retcode != 0:
         if retcode == -9:
@@ -155,7 +182,8 @@ class WorkerCancellationManager:
                      shlex.join(cmdline))
         raise subprocess.CalledProcessError(retcode, cmdline)
       else:
-        if p.stdout:
-          ret = p.stdout.read()
-          p.stdout.close()
+        # if p.stdout:
+        if stdout:
+          ret = stdout
+          # p.stdout.close()
           return ret

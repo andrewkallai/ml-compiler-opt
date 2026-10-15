@@ -109,9 +109,11 @@ def create_flat_sequence_example_dataset_fn(
     # Data collector returns empty strings for corner cases, filter them out
     # here.
     # yapf: disable - Looks better hand formatted
+    print(tf.data.Dataset.from_tensor_slices(sequence_examples))
     dataset = (tf.data.Dataset
                 .from_tensor_slices(sequence_examples)
-                .filter(lambda string: tf.strings.length(string) > 0)
+                .map(lambda x: tf.strings.as_string(x))
+                .filter(lambda s: tf.strings.length(s) > 0)
                 .map(parser_fn)
                 .filter(lambda traj: tf.size(traj.reward) > 2)
                 .unbatch()
