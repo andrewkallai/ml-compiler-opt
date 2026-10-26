@@ -63,8 +63,8 @@ class LocalDataCollector(data_collector.DataCollector):
     # collection calls. Subsequent runs will wait for these to finish.
     self._reset_workers: concurrent.futures.Future | None = None
     self._current_futures: list[worker.WorkerFuture] = []
-    self._pool = concurrent.futures.ThreadPoolExecutor()
-    self._prefetch_pool = concurrent.futures.ThreadPoolExecutor()
+    self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    self._prefetch_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
     self._next_sample: list[
         concurrent.futures.Future] = self._prefetch_next_sample()
 

@@ -93,7 +93,7 @@ class InliningRunner(compilation_runner.CompilationRunner):
     cmdline.extend(mllvm_args + ['-o', output_native_path])
     if tf_policy_path:
       cmdline.extend(
-          ['-mllvm', '-ml-inliner-model-under-training=' + tf_policy_path])
+          ['-mllvm', '-ml-inliner-model-under-training=' + tf_policy_path, '-fclangir'])
     self._cancellation_manager.start_cancellable_process(cmdline)
     cmdline = [self._llvm_size_path, output_native_path]
     output = self._cancellation_manager.start_cancellable_process(

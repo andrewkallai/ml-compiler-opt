@@ -267,7 +267,7 @@ def create_local_worker_pool(worker_cls: 'type[worker.Worker]',
       _make_stub(worker_cls, parse_argv, pickle_func, *args, **final_kwargs)
       for _ in range(count)
   ]
-  return worker.FixedWorkerPool(workers=stubs, worker_concurrency=16)
+  return worker.FixedWorkerPool(workers=stubs, worker_concurrency=2)
 
 
 def close_local_worker_pool(pool: worker.FixedWorkerPool):
